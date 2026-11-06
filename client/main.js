@@ -1,10 +1,12 @@
 import * as THREE from 'three';
 import { createMap, B, BLOCK_HP, GHOST_REMOVABLE, W, D, H } from '/shared/map.js';
-import { TICK, P, KEY, WEAPONS, MAX_HP, GHOST, stepPlayer, stepGhost, stepWeapon, shotDirs, aimDir, maskInput } from '/shared/sim.js';
+import { TICK, P, KEY, WEAPONS, SHOP, GHOST, stepPlayer, stepGhost, stepWeapon, shotDirs, aimDir, maskInput } from '/shared/sim.js';
 import { rayBlocks, rayBox, hitboxes } from '/shared/ray.js';
 import { zoneStatus, ZONE_START } from '/shared/zone.js';
 import { CARDS, GIANT, gravityMul } from '/shared/cards.js';
-import { renderer, scene, camera, buildWorld, makeAvatar, removeAvatar, setAvatarWeapon, setAvatarGhost, setGhostPreview, setZone, setFog, BLOCK_COLORS } from './world.js';
+import { CHARACTERS, DEFAULT_CHARACTER, charOf } from '/shared/characters.js';
+import { loadAssets, renderThumbnails } from './assets.js';
+import { renderer, scene, camera, buildWorld, makeAvatar, removeAvatar, setAvatarWeapon, setAvatarGhost, setAvatarFlash, animateAvatar, setGhostPreview, setZone, setFog, BLOCK_COLORS } from './world.js';
 import { setGunVisible, setGunModel, setScoped, muzzleWorld, gunFired, updateGun, tracer, burst, updateFx, initAudio, sfx } from './fx.js';
 import { buildMinimap, drawMinimap } from './minimap.js';
 import { isTouch, touch, initTouch, resetTouch } from './touch.js';
@@ -33,8 +35,9 @@ addEventListener('keydown', (e) => {
   if (!locked()) return;
   if (e.code === 'KeyB' && !e.repeat) toggleShop();
   if (e.code === 'KeyF' && !e.repeat && ghost) ghostVote();
+  if (e.code === 'KeyC' && !e.repeat) nextChar();
   const n = e.code.match(/^Digit([1-5])$/);
-  if (n && shopOpen) buy(Number(n[1]) - 1);
+  if (n && shopOpen) buy(shopList()[Number(n[1]) - 1]);
   if (n && cardPick && cardPick.chooser === myId && !cardPick.picked) pickCard(Number(n[1]) - 1);
   keys.add(e.code);
   if (e.code === 'Space') e.preventDefault();
@@ -86,6 +89,7 @@ function keyBits() {
     if (touch.down) k |= KEY.DOWN;
     if (touch.reload) k |= KEY.RELOAD;
     if (touch.fire && alive) k |= KEY.FIRE;
+    if (touch.skill) k |= KEY.SKILL;
   }
   if (keys.has('KeyW')) k |= KEY.F;
   if (keys.has('KeyS')) k |= KEY.B;
@@ -94,6 +98,7 @@ function keyBits() {
   if (keys.has('Space')) k |= KEY.J;
   if (keys.has('ShiftLeft') || keys.has('ShiftRight')) k |= KEY.DOWN;
   if (keys.has('KeyR')) k |= KEY.RELOAD;
+  if (keys.has('KeyE')) k |= KEY.SKILL;
   if (firing) k |= KEY.FIRE;
   return k;
 }
@@ -101,7 +106,10 @@ function keyBits() {
 // ---- 상태 ----
 let ws = null, joined = false, myId = 0;
 let me = null, prev = null, seq = 0, pending = [];
-let alive = true, hp = MAX_HP, money = 0, killerId = 0, respawnAt = 0, spectateId = 0;
+// 내 캐릭터: 입장 전엔 고른 것, 입장 뒤엔 서버가 보내 준 명단 기준
+let myChar = Object.hasOwn(CHARACTERS, storageGet('char')) ? storageGet('char') : DEFAULT_CHARACTER;
+const myCh = () => charOf(myChar);
+let alive = true, hp = myCh().hp, money = 0, killerId = 0, respawnAt = 0, spectateId = 0;
 let ghost = false, ghostReadyAt = 0, ghostTarget = null, votes = null, voted = false;
 let card = null, giantId = 0, cardPick = null; // 이번 라운드 규칙 카드, 거인 id, 고르는 중인 카드
 const grav = () => gravityMul(card);
@@ -114,20 +122,66 @@ const INTERP_MS = 100;
 
 $('name').value = storageGet('name');
 $('join').addEventListener('click', connect);
+
+// ---- 캐릭터 선택 (입장 화면) ----
+let assetsReady = false;
+loadAssets().then(() => {
+  assetsReady = true;
+  buildCharSelect(renderThumbnails());
+  $('join').disabled = false;
+  $('join').textContent = '입장';
+}).catch((err) => {
+  console.error(err);
+  $('error').textContent = '캐릭터 모델을 불러오지 못했습니다. 새로고침해 주세요.';
+});
+
+function buildCharSelect(thumbs) {
+  const list = $('char-list');
+  list.innerHTML = '';
+  for (const [id, c] of Object.entries(CHARACTERS)) {
+    const card = document.createElement('div');
+    card.className = 'char-card' + (id === myChar ? ' selected' : '');
+    card.style.setProperty('--c', c.color);
+    card.innerHTML = '<img alt=""><h3></h3><div class="role"></div><div class="stat"></div><div class="ab"></div>';
+    card.querySelector('img').src = thumbs[id];
+    card.querySelector('h3').textContent = c.name;
+    card.querySelector('.role').textContent = c.role;
+    card.querySelector('.stat').textContent = `체력 ${c.hp} · ${WEAPONS[c.weapon].name}`;
+    card.querySelector('.ab').textContent = `[E] ${c.ability.name}: ${c.ability.desc}`;
+    card.addEventListener('click', () => {
+      myChar = id;
+      storageSet('char', id);
+      for (const el of list.children) el.classList.toggle('selected', el === card);
+    });
+    list.append(card);
+  }
+}
+
+// 대기실에서 C: 다음 캐릭터로 (서버가 그 자리에서 다시 태워 준다)
+function nextChar() {
+  if (phase !== 'L') return centerMsg('캐릭터는 대기실에서만 바꿀 수 있습니다');
+  if (!alive) return;
+  const ids = Object.keys(CHARACTERS);
+  const c = ids[(ids.indexOf(myChar) + 1) % ids.length];
+  storageSet('char', c);
+  ws.send(JSON.stringify({ t: 'char', c }));
+  centerMsg(`${CHARACTERS[c].name}(으)로 변경`);
+  sfx.buy();
+}
 for (const id of ['name', 'room']) $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
 
 function storageGet(k) { try { return localStorage.getItem(k) || ''; } catch { return ''; } }
 function storageSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
 
 function connect() {
-  if (ws) return;
+  if (ws || !assetsReady) return;
   initAudio();
   if (isTouch) lockPointer(); // 전체 화면은 버튼을 누른 순간에만 허용된다
   $('error').textContent = '';
   const name = $('name').value.trim();
   storageSet('name', name);
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`);
-  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name, room: $('room').value.trim() }));
+  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name, room: $('room').value.trim(), c: myChar }));
   ws.onmessage = (e) => onMessage(JSON.parse(e.data));
   ws.onclose = () => {
     const wasJoined = joined;
@@ -162,7 +216,7 @@ function onMessage(msg) {
       me = { ...msg.state };
       prev = { ...me };
       seq = 0; pending = [];
-      alive = true; hp = MAX_HP;
+      alive = true; hp = myCh().hp;
       phase = msg.ph; round = msg.rd;
       setCard(msg.card, msg.giant);
       map = createMap();
@@ -223,8 +277,8 @@ function onMessage(msg) {
       if (msg.kill) sfx.kill();
       const a = others.get(msg.id);
       if (a) {
-        a.flash = 0.12;
-        burst(a.root.position.clone().add(new THREE.Vector3(0, msg.head ? 1.6 : 1, 0)), colorOf(msg.id), 6);
+        setAvatarFlash(a, 0.12);
+        burst(a.root.position.clone().add(new THREE.Vector3(0, msg.head ? 1.4 : 0.5, 0)), colorOf(msg.id), 6);
       }
       break;
     }
@@ -233,6 +287,7 @@ function onMessage(msg) {
       flashVignette(msg.zone ? 'zone' : '');
       break;
     case 'kill': onKill(msg); break;
+    case 'ab': onAbility(msg); break;
     case 'pong':
       $('ping').textContent = `${Math.round(performance.now() - msg.c)} ms`;
       break;
@@ -265,7 +320,11 @@ function onRoster(list) {
   for (const p of list) {
     ids.add(p.id);
     players.set(p.id, p);
-    if (!others.has(p.id)) others.set(p.id, makeAvatar(p.name, p.color));
+    if (p.id === myId) myChar = p.char;
+    // 대기실에서 캐릭터를 바꾸면 모델도 새로
+    const old = others.get(p.id);
+    if (old && old.char !== p.char) { removeAvatar(old); others.delete(p.id); }
+    if (!others.has(p.id)) others.set(p.id, makeAvatar(p.name, p.color, p.char));
   }
   for (const [id, a] of others) if (!ids.has(id)) { removeAvatar(a); others.delete(id); }
 
@@ -274,7 +333,7 @@ function onRoster(list) {
     const li = document.createElement('li');
     li.innerHTML = '<i></i><span></span><b></b>';
     li.querySelector('i').style.background = p.color;
-    li.querySelector('span').textContent = p.name + (p.id === myId ? ' (나)' : '');
+    li.querySelector('span').textContent = `${p.name}${p.id === myId ? ' (나)' : ''} · ${charOf(p.char).name}`;
     li.querySelector('b').textContent = p.wins ? `${p.wins}승` : '';
     $('players').append(li);
   }
@@ -301,7 +360,7 @@ function onSnapshot(msg) {
   votes = msg.vt;
   if ((msg.rc?.[0] ?? null) !== card || (msg.rc?.[1] ?? 0) !== giantId) setCard(msg.rc?.[0] ?? null, msg.rc?.[1] ?? 0);
   const ps = new Map();
-  for (const [id, x, y, z, vx, vy, vz, g, pyaw, ppitch, last, php, palive, ammo, cd, rl, heat, w, tr, pmoney, pghost] of msg.ps) {
+  for (const [id, x, y, z, vx, vy, vz, g, pyaw, ppitch, last, php, palive, ammo, cd, rl, heat, w, tr, pmoney, pghost, ab, dt, ddx, ddz] of msg.ps) {
     ps.set(id, { x, y, z, yaw: pyaw, pitch: ppitch, alive: !!palive, ghost: !!pghost, w });
     if (id !== myId) continue;
     hp = php;
@@ -311,8 +370,8 @@ function onSnapshot(msg) {
     alive = !!palive;
     if (alive) {
       // 서버 상태로 맞춘 뒤, 서버가 아직 처리 안 한 입력을 다시 적용 (예측 보정)
-      me = { x, y, z, vx, vy, vz, g: !!g, w, ammo, cd, rl, heat, tr: !!tr };
-      for (const inp of pending) { stepPlayer(me, inp, map, grav()); stepWeapon(me, inp.k); }
+      me = { x, y, z, vx, vy, vz, g: !!g, w, ammo, cd, rl, heat, tr: !!tr, ab, dt, ddx, ddz };
+      for (const inp of pending) { stepPlayer(me, inp, map, grav(), myCh()); stepWeapon(me, inp.k); }
       if (!wasAlive) { prev = { ...me }; onRespawn(); }
     } else if (pghost) {
       // 망령 위치도 서버 기준으로 맞추고 아직 처리 안 된 입력을 다시 적용
@@ -417,6 +476,23 @@ function onKill({ k, v, head, respawn }) {
   }
 }
 
+// ---- 스킬 ----
+// 내 스킬은 예측으로 먼저 소리를 내고(onLocalSkill), 다른 사람 스킬은 서버 알림(ab)으로 효과만
+const SKILL_SFX = { heal: () => sfx.heal(), dash: () => sfx.dash(), leap: () => sfx.leap() };
+function onLocalSkill(type) {
+  SKILL_SFX[type]?.();
+  if (type === 'heal') burst(camera.position.clone().addScaledVector(camera.getWorldDirection(new THREE.Vector3()), 0.8), '#7dff9a', 10, 0.06);
+}
+
+function onAbility({ id, type }) {
+  if (id === myId) return;
+  const a = others.get(id);
+  if (!a || !a.root.visible) return;
+  const at = a.root.position.clone().add(new THREE.Vector3(0, 0.8, 0));
+  burst(at, type === 'heal' ? '#7dff9a' : charOf(players.get(id)?.char).color, 12, 0.1);
+  if (camera.position.distanceTo(at) < 25) SKILL_SFX[type]?.();
+}
+
 // 죽었을 때 클릭하면 살아 있는 다른 사람으로 넘기기
 function cycleSpectate() {
   const view = snaps[snaps.length - 1];
@@ -486,9 +562,12 @@ function closeShop() {
 }
 function toggleShop() { if (shopOpen) closeShop(); else openShop(); }
 
+// 상점 목록: 1번 = 내 캐릭터 고유 무기(무료), 2~5번 = 파는 무기
+const shopList = () => [myCh().weapon, ...SHOP];
+
 // 돈 확인은 서버가 한다 (이번 구매 시간에 산 것을 바꾸면 환불까지 계산)
 function buy(idx) {
-  if (!shopOpen || me.w === idx) return;
+  if (!shopOpen || idx === undefined || me.w === idx) return;
   ws.send(JSON.stringify({ t: 'buy', w: idx }));
   sfx.buy();
 }
@@ -497,14 +576,15 @@ function renderShop() {
   const free = phase === 'L';
   $('shop-money').textContent = free ? '대기실: 전부 무료(연습)' : `${money.toLocaleString()} 코인`;
   $('shop-list').innerHTML = '';
-  WEAPONS.forEach((w, i) => {
+  shopList().forEach((i, n) => {
+    const w = WEAPONS[i];
     const li = document.createElement('li');
     const owned = me && me.w === i;
     const can = free || w.price <= money;
     li.className = owned ? 'owned' : can ? '' : 'poor';
     li.dataset.shop = i;
     li.innerHTML = '<kbd></kbd><span class="nm"></span><span class="st"></span><span class="pr"></span>';
-    li.querySelector('kbd').textContent = i + 1;
+    li.querySelector('kbd').textContent = n + 1;
     li.querySelector('.nm').textContent = w.name;
     li.querySelector('.st').textContent = `${w.pellets > 1 ? `${w.dmg}×${w.pellets}` : w.dmg} 피해 · ${w.mag}발 · ${w.auto ? '연사' : '단발'}`;
     li.querySelector('.pr').textContent = owned ? '보유' : w.price ? w.price.toLocaleString() : '무료';
@@ -579,7 +659,7 @@ function posAt(view, id) {
   const f = Math.hypot(p1.x - p0.x, p1.z - p0.z) > 3 ? 1 : view.f;
   return {
     x: lerp(p0.x, p1.x, f), y: lerp(p0.y, p1.y, f), z: lerp(p0.z, p1.z, f),
-    yaw: lerpAngle(p0.yaw, p1.yaw, f), pitch: lerp(p0.pitch, p1.pitch, f), alive: p1.alive, w: p1.w,
+    yaw: lerpAngle(p0.yaw, p1.yaw, f), pitch: lerp(p0.pitch, p1.pitch, f), alive: p1.alive, ghost: p1.ghost, w: p1.w,
   };
 }
 
@@ -594,20 +674,14 @@ function updateOthers(view, dt, hideId) {
     a.root.position.set(p.x, p.ghost ? p.y - P.eye + Math.sin(performance.now() / 400 + id) * 0.1 : p.y, p.z);
     a.root.rotation.y = p.yaw;
     a.root.scale.setScalar(scaleOf(id));
-    a.head.rotation.x = p.pitch * 0.6;
-    a.armR.rotation.x = a.armL.rotation.x = Math.PI / 2 + p.pitch;
     setAvatarWeapon(a, p.w);
-    const amt = p.alive ? Math.min(1, speed / P.speed) : 0;
+    const amt = p.alive && !p.ghost ? Math.min(1, speed / P.speed) : 0;
     if (p.ghost) a.fall = 0;
-    a.phase += dt * 10 * amt;
-    const swing = Math.sin(a.phase) * 0.7 * amt;
-    a.legL.rotation.x = swing;
-    a.legR.rotation.x = -swing;
+    animateAvatar(a, dt, amt);
     if (!p.ghost) a.fall += ((p.alive ? 0 : 1) - a.fall) * Math.min(1, dt * 8);
     a.body.rotation.x = -a.fall * Math.PI / 2;
     a.tag.visible = p.alive;
-    a.flash = Math.max(0, a.flash - dt);
-    for (const m of a.mats) m.emissive.setScalar(a.flash > 0 ? 0.6 : 0);
+    if (a.flash > 0) setAvatarFlash(a, Math.max(0, a.flash - dt));
   }
 }
 
@@ -658,7 +732,7 @@ const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(
 function updateHud(now) {
   const w = WEAPONS[me.w];
   $('hp-num').textContent = alive ? hp : 0;
-  const maxHp = myId === giantId ? GIANT.hp : MAX_HP;
+  const maxHp = myId === giantId ? GIANT.hp : myCh().hp;
   $('hp-bar').style.width = `${Math.min(1, (alive ? hp : 0) / maxHp) * 100}%`;
   $('hp-bar').className = hp <= 30 ? 'low' : '';
   $('ammo-num').textContent = me.ammo;
@@ -673,6 +747,11 @@ function updateHud(now) {
   }
   if (shopOpen) renderShop();
   $('hp').classList.toggle('hidden', ghost);
+  const ab = myCh().ability, cdLeft = alive ? (me.ab ?? 0) * TICK : 0;
+  $('skill').classList.toggle('hidden', !alive);
+  $('skill').classList.toggle('ready', cdLeft <= 0);
+  $('skill-name').textContent = ab.name;
+  $('skill-cd').textContent = cdLeft > 0 ? `${cdLeft.toFixed(1)}초` : '준비됨';
   $('ammo').classList.toggle('hidden', ghost);
   if (ghost) {
     const left = Math.max(0, (ghostReadyAt - now) / 1000);
@@ -736,7 +815,9 @@ if (isTouch) {
 function updateTouchUi() {
   const show = (id, v) => $(id).classList.toggle('hidden', !v);
   const voting = phase === 'R' && zone?.[7];
-  for (const id of ['t-fire', 't-jump', 't-reload']) show(id, alive);
+  for (const id of ['t-fire', 't-jump', 't-reload', 't-skill']) show(id, alive);
+  $('t-skill').textContent = myCh().ability.name;
+  $('t-skill').classList.toggle('cool', (me.ab ?? 0) > 0);
   show('t-aim', alive && me.w === 4);
   show('t-shop', alive && (phase === 'B' || phase === 'L'));
   for (const id of ['t-place', 't-remove', 't-up', 't-down']) show(id, ghost);
@@ -758,7 +839,10 @@ function frame(now) {
       const inp = { s: ++seq, k, y: yaw, p: pitch, rt: view ? Math.round(view.tick * 100) / 100 : 0 };
       if (alive) {
         prev = { ...me };
-        stepPlayer(me, inp, map, grav());
+        const wasCool = me.ab > 0;
+        const used = stepPlayer(me, inp, map, grav(), myCh());
+        if (used) onLocalSkill(used);
+        else if (wasCool && me.ab === 0) sfx.skillReady();
         const spread = stepWeapon(me, inp.k);
         if (spread >= 0) localShot(inp, spread);
       } else if (ghost) {

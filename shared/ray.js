@@ -42,9 +42,11 @@ export function rayBox(o, d, min, max) {
 }
 
 // 플레이어 발 위치 기준 머리·몸통 판정 상자 (k = 크기 배율, 거인 카드)
+// 치비 체형(머리가 키의 절반)에 맞춤. 세 캐릭터 모두 같은 상자를 써서 공정하게
+export const HEAD_Y = 0.95;
 export function hitboxes({ x, y, z }, k = 1) {
   return [
-    { head: true, min: [x - 0.25 * k, y + 1.38 * k, z - 0.25 * k], max: [x + 0.25 * k, y + 1.88 * k, z + 0.25 * k] },
-    { head: false, min: [x - 0.4 * k, y, z - 0.4 * k], max: [x + 0.4 * k, y + 1.38 * k, z + 0.4 * k] },
+    { head: true, min: [x - 0.42 * k, y + HEAD_Y * k, z - 0.42 * k], max: [x + 0.42 * k, y + 1.85 * k, z + 0.42 * k] },
+    { head: false, min: [x - 0.36 * k, y, z - 0.36 * k], max: [x + 0.36 * k, y + HEAD_Y * k, z + 0.36 * k] },
   ];
 }

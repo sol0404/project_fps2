@@ -6,10 +6,10 @@
 export const isTouch = matchMedia('(pointer: coarse)').matches || new URLSearchParams(location.search).has('touch');
 
 // main.js가 읽는 상태
-export const touch = { move: [0, 0], fire: false, jump: false, reload: false, down: false };
+export const touch = { move: [0, 0], fire: false, jump: false, reload: false, down: false, skill: false };
 
 const $ = (id) => document.getElementById(id);
-const HOLD = { 't-fire': 'fire', 't-jump': 'jump', 't-reload': 'reload', 't-down': 'down', 't-up': 'jump' };
+const HOLD = { 't-fire': 'fire', 't-jump': 'jump', 't-reload': 'reload', 't-down': 'down', 't-up': 'jump', 't-skill': 'skill' };
 const STICK_R = 50;
 
 let handlers = null;
@@ -97,7 +97,7 @@ function onEnd(e) {
 export function resetTouch() {
   touches.clear();
   touch.move = [0, 0];
-  touch.fire = touch.jump = touch.reload = touch.down = false;
+  touch.fire = touch.jump = touch.reload = touch.down = touch.skill = false;
   $('stick')?.classList.add('hidden');
   for (const b of document.querySelectorAll('.tbtn.on')) b.classList.remove('on');
 }

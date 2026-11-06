@@ -1,6 +1,7 @@
 // 장면, 블록 맵, 플레이어 아바타
 import * as THREE from 'three';
 import { W, D, H, B } from '/shared/map.js';
+import { createCharacterModel } from './assets.js';
 
 export const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -104,38 +105,52 @@ function nameTag(text) {
   return sprite;
 }
 
-// 팔다리는 관절(pivot) 그룹 안에 넣어 흔들기
-function limb(w, h, color, x, y) {
-  const pivot = new THREE.Group();
-  pivot.position.set(x, y, 0);
-  pivot.add(part(w, h, w, color, 0, -h / 2, 0));
-  return pivot;
-}
-
-export function makeAvatar(name, color) {
+// 캐릭터 모델 아바타 (project_fps 모델). 걸을 땐 통통 튀고, 죽으면 발을 축으로 눕는다
+// root(위치·방향) > body(쓰러짐) > hop(걷기 바운스) > 모델
+export function makeAvatar(name, color, char) {
   const root = new THREE.Group();
-  const body = new THREE.Group(); // 쓰러질 때 발을 축으로 눕힌다
-  const skin = '#f2d0a4', pants = '#2d3550';
-  const legL = limb(0.27, 0.7, pants, -0.15, 0.7), legR = limb(0.27, 0.7, pants, 0.15, 0.7);
-  const armL = limb(0.22, 0.65, color, -0.42, 1.38), armR = limb(0.22, 0.65, color, 0.42, 1.38);
-  // 오른손에 든 총 (팔 방향 = 팔 기준 -y). 길이는 무기에 따라 setAvatarWeapon에서
-  const gun = part(0.1, 0.55, 0.12, '#2b2b30', 0, -0.75, -0.02);
-  armR.add(gun);
-  armL.rotation.z = -0.35;
-  const torso = part(0.6, 0.68, 0.32, color, 0, 1.05, 0);
-  const head = new THREE.Group();
-  head.position.y = 1.39;
-  head.add(part(0.46, 0.46, 0.46, skin, 0, 0.24, 0));
-  head.add(part(0.07, 0.1, 0.02, '#1d1d1d', -0.1, 0.28, -0.235));
-  head.add(part(0.07, 0.1, 0.02, '#1d1d1d', 0.1, 0.28, -0.235));
-  body.add(legL, legR, armL, armR, torso, head);
+  const body = new THREE.Group();
+  const hop = new THREE.Group();
+  const { object, materials, height } = createCharacterModel(char);
+  hop.add(object);
+  // 오른손 쪽에 든 총. 길이는 무기에 따라 setAvatarWeapon에서
+  const gun = part(0.1, 0.12, 0.55, '#2b2b30', 0.42, 0.75, -0.25);
+  hop.add(gun);
+  body.add(hop);
   const tag = nameTag(name);
+  tag.position.y = Math.max(2.2, height + 0.3);
+  tag.material.color.set(color);
   root.add(body, tag);
   scene.add(root);
-  const mats = [];
-  body.traverse((o) => { if (o.material) { o.material.transparent = true; mats.push(o.material); } });
+  const mats = [...materials, gun.material];
   const baseColors = mats.map((m) => m.color.clone());
-  return { root, body, head, legL, legR, armL, armR, gun, tag, mats, baseColors, phase: 0, fall: 0, flash: 0, w: 0, ghost: false };
+  return { root, body, hop, gun, tag, mats, baseColors, char, phase: 0, bounce: 0, fall: 0, flash: 0, w: -1, ghost: false };
+}
+
+// 맞으면 잠깐 하얗게 (모델 재질이 조명을 안 받는 MeshBasic이라 emissive 대신 색을 섞는다)
+const WHITE = new THREE.Color('#ffffff'), GHOST_TINT = new THREE.Color('#d6c2ff');
+function applyTint(a) {
+  a.mats.forEach((m, i) => {
+    m.color.copy(a.baseColors[i]);
+    if (a.ghost) m.color.lerp(GHOST_TINT, 0.6);
+    if (a.flash > 0) m.color.lerp(WHITE, 0.6);
+  });
+}
+
+export function setAvatarFlash(a, flash) {
+  const was = a.flash > 0;
+  a.flash = flash;
+  if (was !== flash > 0) applyTint(a);
+}
+
+// 걷기: 통통 튀고 살짝 찌그러짐 (speed = 0~1)
+export function animateAvatar(a, dt, amt) {
+  a.bounce += (amt - a.bounce) * Math.min(1, dt * 10);
+  a.phase += dt * 14 * amt;
+  const squash = Math.cos(a.phase * 2) * 0.06 * a.bounce;
+  a.hop.position.y = Math.abs(Math.sin(a.phase)) * 0.18 * a.bounce;
+  a.hop.scale.set(1 + squash, 1 - squash, 1 + squash);
+  a.hop.rotation.z = Math.sin(a.phase) * 0.08 * a.bounce;
 }
 
 // 망령: 반투명하게, 총은 숨김
@@ -143,12 +158,13 @@ export function setAvatarGhost(a, ghost) {
   if (a.ghost === ghost) return;
   a.ghost = ghost;
   a.gun.visible = !ghost;
-  a.mats.forEach((m, i) => {
+  for (const m of a.mats) {
+    m.transparent = ghost;
     m.opacity = ghost ? 0.3 : 1;
     m.depthWrite = !ghost;
-    m.color.copy(a.baseColors[i]);
-    if (ghost) m.color.lerp(new THREE.Color('#d6c2ff'), 0.6);
-  });
+    m.needsUpdate = true;
+  }
+  applyTint(a);
   a.tag.material.opacity = ghost ? 0.5 : 1;
 }
 
@@ -173,13 +189,13 @@ export function setGhostPreview(place, remove, ready) {
   removeBox.material.color.set(ready ? '#ff4a4a' : '#884444');
 }
 
-const AVATAR_GUN_LEN = [0.5, 0.8, 1, 0.9, 1.35];
+const AVATAR_GUN_LEN = [0.5, 0.8, 1, 0.9, 1.35, 0.85, 0.95, 0.7];
 export function setAvatarWeapon(a, w) {
   if (a.w === w) return;
   a.w = w;
   const len = AVATAR_GUN_LEN[w] ?? 1;
-  a.gun.scale.y = len;
-  a.gun.position.y = -0.5 - 0.275 * len;
+  a.gun.scale.z = len;
+  a.gun.position.z = 0.05 - 0.275 * len;
 }
 
 // ---- 자기장 벽: 안쪽에서도 보이게 양면, 반투명 ----
@@ -210,5 +226,9 @@ export function setFog(dense) {
 
 export function removeAvatar(a) {
   scene.remove(a.root);
-  a.root.traverse((o) => { o.geometry?.dispose(); o.material?.map?.dispose(); o.material?.dispose(); });
+  // 모델의 형상·텍스처는 다른 아바타와 함께 쓰므로 복제한 재질만 버린다
+  for (const m of a.mats) m.dispose();
+  a.gun.geometry.dispose();
+  a.tag.material.map.dispose();
+  a.tag.material.dispose();
 }

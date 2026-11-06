@@ -6,7 +6,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>블록 아레나</title>
   <link rel="stylesheet" href="/client/style.css">
-  <script type="importmap">{ "imports": { "three": "/vendor/three.module.js" } }</script>
+  <script type="importmap">{ "imports": { "three": "/vendor/three.module.js", "three/addons/": "/addons/" } }</script>
 </head>
 <body>
   <div id="lobby" class="overlay">
@@ -14,15 +14,18 @@
       <h1>블록 아레나</h1>
       <label>이름<input id="name" maxlength="12" placeholder="플레이어"></label>
       <label>방 코드<input id="room" maxlength="4" placeholder="비우면 새 방"></label>
-      <button id="join">입장</button>
+      <div class="char-head">캐릭터</div>
+      <div id="char-list"></div>
+      <button id="join" disabled>캐릭터 불러오는 중…</button>
       <p id="error"></p>
+      <p class="credit">캐릭터 모델 "chiikawa and friends" by Nini · <a href="https://creativecommons.org/licenses/by-nc/4.0/" target="_blank" rel="noopener">CC BY-NC 4.0</a> · 비공식 팬 프로젝트, 비상업적 이용만</p>
     </div>
   </div>
 
   <div id="resume" class="overlay hidden">
     <div class="panel">
       <p class="big">클릭해서 계속</p>
-      <p class="hint">WASD 이동 · Space 점프 · 클릭 사격 · R 재장전<br>B 상점 · 오른쪽 클릭 저격 조준 · Tab 점수판 · Esc 마우스 풀기</p>
+      <p class="hint">WASD 이동 · Space 점프 · 클릭 사격 · R 재장전 · E 스킬<br>B 상점 · C 캐릭터 바꾸기(대기실) · 오른쪽 클릭 저격 조준 · Tab 점수판 · Esc 마우스 풀기</p>
     </div>
   </div>
 
@@ -49,6 +52,7 @@
     <div id="scope" class="hidden"></div>
     <div id="banner" class="hidden"><div id="banner-title"></div><div id="banner-sub"></div></div>
     <div id="hp"><span id="hp-num">100</span><div class="bar"><div id="hp-bar"></div></div></div>
+    <div id="skill"><kbd id="skill-key">E</kbd><span id="skill-name"></span><span id="skill-cd"></span></div>
     <div id="ammo">
       <div id="money"></div>
       <div id="weapon-name"></div>
@@ -70,6 +74,7 @@
       <div class="tbtn big hidden" id="t-fire">사격</div>
       <div class="tbtn hidden" id="t-jump">점프</div>
       <div class="tbtn small hidden" id="t-reload">R</div>
+      <div class="tbtn hidden" id="t-skill">스킬</div>
       <div class="tbtn small hidden" id="t-aim" data-act="aim">조준</div>
       <div class="tbtn pill hidden" id="t-shop" data-act="shop">상점</div>
       <div class="tbtn pill" id="t-board" data-act="board">점수</div>
